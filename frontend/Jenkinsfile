@@ -1,0 +1,72 @@
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds(abortPrevious: true)
+    }
+
+    environment {
+        DOCKER_REGISTRY = "${env.DOCKER_REGISTRY ?: ''}"
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
+        IMAGE_NAME = 'project-frontend'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Dependency Build') {
+            steps {
+                dir('frontend') {
+                    sh 'npm ci'
+                    sh 'npm run build'
+                }
+            }
+        }
+
+        stage('Docker Image Build') {
+            steps {
+                script {
+                    def tag = "${IMAGE_NAME}:${IMAGE_TAG}"
+                    dir('frontend') {
+                        sh "docker build -t ${tag} ."
+                        sh "docker tag ${tag} ${IMAGE_NAME}:latest"
+                        if (env.DOCKER_REGISTRY?.trim()) {
+                            def reg = env.DOCKER_REGISTRY.trim().replaceAll('/$', '')
+                            sh """
+                                docker tag ${tag} ${reg}/${IMAGE_NAME}:${IMAGE_TAG}
+                                docker tag ${tag} ${reg}/${IMAGE_NAME}:latest
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                script {
+                    if (env.DOCKER_REGISTRY?.trim()) {
+                        def reg = env.DOCKER_REGISTRY.trim().replaceAll('/$', '')
+                        sh """
+                            docker push ${reg}/${IMAGE_NAME}:${IMAGE_TAG}
+                            docker push ${reg}/${IMAGE_NAME}:latest
+                        """
+                    } else {
+                        echo 'DOCKER_REGISTRY is not set; skipping registry push. Add kubectl, SSH, or compose steps here.'
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+            echo 'Frontend pipeline failed — check stages above.'
+        }
+    }
+}
