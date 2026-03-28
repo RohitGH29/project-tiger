@@ -1,3 +1,7 @@
+// Local Jenkins-in-Docker setup:
+// - Mount host Docker socket: -v /var/run/docker.sock:/var/run/docker.sock
+// - Install plugins: Docker Pipeline, Pipeline
+
 pipeline {
     agent any
 
@@ -20,19 +24,30 @@ pipeline {
         }
 
         stage('Dependency Build') {
+            agent {
+                docker {
+                    image 'python:3.12-slim-bookworm'
+                    args '-u root'
+                }
+            }
             steps {
                 dir('python') {
                     sh '''
-                        python3 -m venv .venv
-                        . .venv/bin/activate
-                        pip install --upgrade pip
-                        pip install -r requirements.txt
+                        pip install --no-cache-dir --upgrade pip
+                        pip install --no-cache-dir -r requirements.txt
+                        python -m py_compile app.py
                     '''
                 }
             }
         }
 
         stage('Docker Image Build') {
+            agent {
+                docker {
+                    image 'docker:24-cli'
+                    args '-v /var/run/docker.sock:/var/run/docker.sock'
+                }
+            }
             steps {
                 script {
                     def tag = "${IMAGE_NAME}:${IMAGE_TAG}"
@@ -52,8 +67,15 @@ pipeline {
         }
 
         stage('Deploy') {
+            agent {
+                docker {
+                    image 'docker:24-cli'
+                    args '-v /var/run/docker.sock:/var/run/docker.sock'
+                }
+            }
             steps {
                 script {
+                    def tag = "${IMAGE_NAME}:${IMAGE_TAG}"
                     if (env.DOCKER_REGISTRY?.trim()) {
                         def reg = env.DOCKER_REGISTRY.trim().replaceAll('/$', '')
                         sh """
@@ -61,7 +83,8 @@ pipeline {
                             docker push ${reg}/${IMAGE_NAME}:latest
                         """
                     } else {
-                        echo 'DOCKER_REGISTRY is not set; skipping registry push. Add kubectl, SSH, or compose steps here.'
+                        // App exits after one HTTP call; --rm cleans up. Needs outbound HTTPS to httpbin.
+                        sh "docker run --rm --name project-python-run ${tag}"
                     }
                 }
             }

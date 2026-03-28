@@ -1,3 +1,8 @@
+// Local Jenkins-in-Docker setup:
+// - Mount host Docker socket: -v /var/run/docker.sock:/var/run/docker.sock
+// - Install plugins: Docker Pipeline, Pipeline
+// - Optional: map a stable port (default 9080) so the UI is reachable on your machine
+
 pipeline {
     agent any
 
@@ -10,6 +15,7 @@ pipeline {
         DOCKER_REGISTRY = "${env.DOCKER_REGISTRY ?: ''}"
         IMAGE_TAG = "${env.BUILD_NUMBER}"
         IMAGE_NAME = 'project-frontend'
+        LOCAL_PORT = "${env.FRONTEND_LOCAL_PORT ?: '9080'}"
     }
 
     stages {
@@ -20,15 +26,26 @@ pipeline {
         }
 
         stage('Dependency Build') {
+            agent {
+                docker {
+                    image 'node:20-alpine'
+                    args '-u root'
+                }
+            }
             steps {
                 dir('frontend') {
-                    sh 'npm ci'
-                    sh 'npm run build'
+                    sh 'npm ci && npm run build'
                 }
             }
         }
 
         stage('Docker Image Build') {
+            agent {
+                docker {
+                    image 'docker:24-cli'
+                    args '-v /var/run/docker.sock:/var/run/docker.sock'
+                }
+            }
             steps {
                 script {
                     def tag = "${IMAGE_NAME}:${IMAGE_TAG}"
@@ -48,8 +65,15 @@ pipeline {
         }
 
         stage('Deploy') {
+            agent {
+                docker {
+                    image 'docker:24-cli'
+                    args '-v /var/run/docker.sock:/var/run/docker.sock'
+                }
+            }
             steps {
                 script {
+                    def tag = "${IMAGE_NAME}:${IMAGE_TAG}"
                     if (env.DOCKER_REGISTRY?.trim()) {
                         def reg = env.DOCKER_REGISTRY.trim().replaceAll('/$', '')
                         sh """
@@ -57,7 +81,12 @@ pipeline {
                             docker push ${reg}/${IMAGE_NAME}:latest
                         """
                     } else {
-                        echo 'DOCKER_REGISTRY is not set; skipping registry push. Add kubectl, SSH, or compose steps here.'
+                        sh """
+                            docker stop project-frontend-local 2>/dev/null || true
+                            docker rm project-frontend-local 2>/dev/null || true
+                            docker run -d --name project-frontend-local -p ${LOCAL_PORT}:80 ${tag}
+                        """
+                        echo "Frontend (nginx) published on host port ${LOCAL_PORT} (http://localhost:${LOCAL_PORT})"
                     }
                 }
             }
