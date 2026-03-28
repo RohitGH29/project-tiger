@@ -1,6 +1,6 @@
 // agent any + docker CLI (no "Docker Pipeline" plugin required).
-// Jenkins needs: docker client on PATH + Docker socket (e.g. -v /var/run/docker.sock:/var/run/docker.sock).
-// Optional job env FRONTEND_LOCAL_PORT (default 9080). Optional WORKSPACE_HOST_PATH — see python/Jenkinsfile header.
+// Official jenkins/jenkins has NO docker binary — use repo jenkins/Dockerfile + jenkins/compose.yaml.
+// Optional: FRONTEND_LOCAL_PORT (default 9080), WORKSPACE_HOST_PATH if volume mounts fail.
 
 pipeline {
     agent any
@@ -21,6 +21,22 @@ pipeline {
         stage('Checkout') {
             steps {
                 checkout scm
+            }
+        }
+
+        stage('Verify Docker') {
+            steps {
+                sh '''
+                    if ! command -v docker >/dev/null 2>&1; then
+                        echo "docker CLI not found inside Jenkins."
+                        echo "Fix: build and run from repo jenkins/ (Dockerfile + compose.yaml), or apt-get install docker.io in your image."
+                        exit 1
+                    fi
+                    if ! docker info >/dev/null 2>&1; then
+                        echo "docker cannot reach the daemon. Mount /var/run/docker.sock and fix permissions (jenkins/compose.yaml group_add)."
+                        exit 1
+                    fi
+                '''
             }
         }
 
