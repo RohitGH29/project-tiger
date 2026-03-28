@@ -1,13 +1,17 @@
-# Jenkins controller with Docker client, Python/pip, and Node/npm (Debian packages).
-# Build:  docker build -t project-jenkins:local -f jenkins/Dockerfile jenkins
-# Run:    see compose.yaml in this folder (socket + optional group_add for permissions).
+# Jenkins talks to the HOST Docker engine only:
+#   - Install docker CLI in this image (below).
+#   - At run time, mount the host socket: /var/run/docker.sock (see compose.yaml).
+#   - Pipelines run `docker build` / `docker run` against that daemon — not a separate engine inside Jenkins.
+#
+# Build:  docker compose -f jenkins/compose.yaml build
+# Run:   docker compose -f jenkins/compose.yaml up -d
 
 FROM jenkins/jenkins:lts-jdk17
 
 USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        docker.io \
+        docker-cli \
         python3 \
         python3-pip \
         python3-venv \
@@ -17,6 +21,7 @@ RUN apt-get update \
     && python3 --version \
     && pip3 --version \
     && node --version \
-    && npm --version
+    && npm --version \
+    && docker --version
 
 USER jenkins
