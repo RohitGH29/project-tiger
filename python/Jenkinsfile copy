@@ -1,0 +1,56 @@
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds(abortPrevious: true)
+    }
+
+    environment {
+        DOCKER_REGISTRY = "${env.DOCKER_REGISTRY ?: ''}"
+        IMAGE_NAME = 'project-python'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Dependency Build') {
+            steps {
+                dir('python') {
+                    sh '''
+                        python3 -m venv venv
+                        ./venv/bin/python -m pip install --upgrade pip
+                        ./venv/bin/python -m pip install --no-cache-dir -r requirements.txt
+                        ./venv/bin/python -m py_compile app.py
+                    '''
+                }
+            }
+        }
+
+        stage('Docker Image Build') {
+            steps {
+                dir('python') {
+                    sh "docker build -t ${env.IMAGE_NAME}:${env.BUILD_NUMBER} ."
+                }
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                script {
+                    sh "docker run --rm ${env.IMAGE_NAME}:${env.BUILD_NUMBER}"
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+            echo 'Python pipeline failed — check stages above.'
+        }
+    }
+}

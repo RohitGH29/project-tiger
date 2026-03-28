@@ -1,70 +1,68 @@
-// agent any + docker CLI (no "Docker Pipeline" plugin required).
-// If the image has no docker binary, the pipeline downloads Docker's static client into .ci-bin (needs curl/wget + tar).
-// Dependency + image build stream the app dir as tar to Docker (stdin) so Jenkins-in-Docker works without host bind mounts.
-// Optional: FRONTEND_LOCAL_PORT (default 9080).
+@Library('team-tiger-techies-shared') _
 
-pipeline {
-    agent any
+  pipeline {
+      agent any
 
-    options {
-        timestamps()
-        disableConcurrentBuilds(abortPrevious: true)
-    }
+      options {
+          timestamps()
+          disableConcurrentBuilds(abortPrevious: true)
+      }
 
-    environment {
-        DOCKER_REGISTRY = "${env.DOCKER_REGISTRY ?: ''}"
-        IMAGE_TAG = "${env.BUILD_NUMBER}"
-        IMAGE_NAME = 'project-frontend'
-        LOCAL_PORT = "${env.FRONTEND_LOCAL_PORT ?: '9080'}"
-    }
+      environment {
+          DOCKER_REGISTRY = "${env.DOCKER_REGISTRY ?: ''}"
+          IMAGE_TAG = "${env.BUILD_NUMBER}"
+          IMAGE_NAME = 'project-frontend'
+          LOCAL_PORT = "${env.FRONTEND_LOCAL_PORT ?: '9080'}"
+          PIPELINE_DETECTOR_URL = "${env.PIPELINE_DETECTOR_URL ?:
+  'http://host.docker.internal:8000'}"
+      }
 
-    stages {
-        stage('Checkout') {
-            steps {
-                checkout scm
-            }
-        }
+      stages {
+          stage('Checkout') {
+              steps {
+                  checkout scm
+              }
+          }
 
-    
+          stage('Install Dependencies') {
+              steps {
+                  dir('frontend') {
+                      sh '''
+                          npm install --no-audit --no-fund
+                          npm run build
+                      '''
+                  }
+              }
+          }
 
-        stage('Install Dependencies') {
-            steps {
-                dir('frontend') {
-                script {
-                    sh '''
-                    npm install --no-audit --no-fund
-                    npm run build
-                    '''
-                }
-                }
-            }
-        }
+          stage('Docker Image Build') {
+              steps {
+                  dir('frontend') {
+                      sh "docker build -t ${env.IMAGE_NAME}:${env.BUILD_NUMBER} ."
+                  }
+              }
+          }
 
-        stage('Docker Image Build') {
-            steps {
-                dir('frontend') {
-                    sh "docker build -t ${env.IMAGE_NAME}:${env.BUILD_NUMBER} ."
-                }
-            }
-        }
+          stage('Deploy') {
+              steps {
+                  script {
+                      sh "docker stop project-frontend-local 2>/dev/null || true"
+                      sh "docker rm project-frontend-local 2>/dev/null || true"
+                      sh "docker run -d --name project-frontend-local -p
+  ${env.LOCAL_PORT}:80 ${env.IMAGE_NAME}:${env.BUILD_NUMBER}"
+                  }
+              }
+          }
+      }
 
-        stage('Deploy') {
-            steps {
-                script {
-                    sh "docker stop project-frontend-local 2>/dev/null || true"
-                    sh "docker rm project-frontend-local 2>/dev/null || true"
-                    sh "docker run -d --name project-frontend-local -p ${env.LOCAL_PORT}:80 ${env.IMAGE_NAME}:${env.BUILD_NUMBER}"
-                    
-                }
-            }
-        }
-    
-
-    }
-
-    post {
-        failure {
-            echo 'Frontend pipeline failed — check stages above.'
-        }
-    }
-}
+      post {
+          always {
+              script {
+                  pipelineReporter()
+              }
+          }
+          failure {
+              echo 'Frontend pipeline failed — check stages above.'
+          }
+      }
+  }

@@ -1,56 +1,66 @@
-pipeline {
-    agent any
+@Library('team-tiger-techies-shared') _
 
-    options {
-        timestamps()
-        disableConcurrentBuilds(abortPrevious: true)
-    }
+  pipeline {
+      agent any
 
-    environment {
-        DOCKER_REGISTRY = "${env.DOCKER_REGISTRY ?: ''}"
-        IMAGE_NAME = 'project-python'
-    }
+      options {
+          timestamps()
+          disableConcurrentBuilds(abortPrevious: true)
+      }
 
-    stages {
-        stage('Checkout') {
-            steps {
-                checkout scm
-            }
-        }
+      environment {
+          DOCKER_REGISTRY = "${env.DOCKER_REGISTRY ?: ''}"
+          IMAGE_NAME = 'project-python'
+          PIPELINE_DETECTOR_URL = "${env.PIPELINE_DETECTOR_URL ?:
+  'http://host.docker.internal:8000'}"
+      }
 
-        stage('Dependency Build') {
-            steps {
-                dir('python') {
-                    sh '''
-                        python3 -m venv venv
-                        ./venv/bin/python -m pip install --upgrade pip
-                        ./venv/bin/python -m pip install --no-cache-dir -r requirements.txt
-                        ./venv/bin/python -m py_compile app.py
-                    '''
-                }
-            }
-        }
+      stages {
+          stage('Checkout') {
+              steps {
+                  checkout scm
+              }
+          }
 
-        stage('Docker Image Build') {
-            steps {
-                dir('python') {
-                    sh "docker build -t ${env.IMAGE_NAME}:${env.BUILD_NUMBER} ."
-                }
-            }
-        }
+          stage('Dependency Build') {
+              steps {
+                  dir('python') {
+                      sh '''
+                          python3 -m venv venv
+                          ./venv/bin/python -m pip install --upgrade pip
+                          ./venv/bin/python -m pip install --no-cache-dir -r
+  requirements.txt
+                          ./venv/bin/python -m py_compile app.py
+                      '''
+                  }
+              }
+          }
 
-        stage('Deploy') {
-            steps {
-                script {
-                    sh "docker run --rm ${env.IMAGE_NAME}:${env.BUILD_NUMBER}"
-                }
-            }
-        }
-    }
+          stage('Docker Image Build') {
+              steps {
+                  dir('python') {
+                      sh "docker build -t ${env.IMAGE_NAME}:${env.BUILD_NUMBER} ."
+                  }
+              }
+          }
 
-    post {
-        failure {
-            echo 'Python pipeline failed — check stages above.'
-        }
-    }
-}
+          stage('Deploy') {
+              steps {
+                  script {
+                      sh "docker run --rm ${env.IMAGE_NAME}:${env.BUILD_NUMBER}"
+                  }
+              }
+          }
+      }
+
+      post {
+          always {
+              script {
+                  pipelineReporter()
+              }
+          }
+          failure {
+              echo 'Python pipeline failed — check stages above.'
+          }
+      }
+  }
