@@ -42,29 +42,8 @@ pipeline {
 
         stage('Docker Image Build') {
             steps {
-                script {
-                    def tag = "${IMAGE_NAME}:${IMAGE_TAG}"
-                    def feDir = fileExists('frontend/package.json') ? "${env.WORKSPACE}/frontend" : (fileExists('package.json') ? env.WORKSPACE : null)
-                    if (!feDir) {
-                        error('No frontend found: add frontend/package.json or package.json at workspace root.')
-                    }
-                    sh """
-                        tar -cf - \\
-                          --exclude=node_modules \\
-                          --exclude=dist \\
-                          --exclude=.git \\
-                          --exclude=.ci-bin \\
-                          -C "${feDir}" . \\
-                          | docker build -t ${tag} -
-                        docker tag ${tag} ${IMAGE_NAME}:latest
-                    """
-                    if (env.DOCKER_REGISTRY?.trim()) {
-                        def reg = env.DOCKER_REGISTRY.trim().replaceAll('/$', '')
-                        sh """
-                            docker tag ${tag} ${reg}/${IMAGE_NAME}:${IMAGE_TAG}
-                            docker tag ${tag} ${reg}/${IMAGE_NAME}:latest
-                        """
-                    }
+                dir('frontend') {
+                    sh "docker build -t ${env.IMAGE_NAME}:${env.BUILD_NUMBER} ."
                 }
             }
         }
@@ -72,24 +51,12 @@ pipeline {
         stage('Deploy') {
             steps {
                 script {
-                    def tag = "${IMAGE_NAME}:${IMAGE_TAG}"
-                    if (env.DOCKER_REGISTRY?.trim()) {
-                        def reg = env.DOCKER_REGISTRY.trim().replaceAll('/$', '')
-                        sh """
-                            docker push ${reg}/${IMAGE_NAME}:${IMAGE_TAG}
-                            docker push ${reg}/${IMAGE_NAME}:latest
-                        """
-                    } else {
-                        sh """
-                            docker stop project-frontend-local 2>/dev/null || true
-                            docker rm project-frontend-local 2>/dev/null || true
-                            docker run -d --name project-frontend-local -p ${LOCAL_PORT}:80 ${tag}
-                        """
-                        echo "Frontend (nginx) on http://localhost:${LOCAL_PORT}"
-                    }
+                    sh "docker run --rm ${env.IMAGE_NAME}:${env.BUILD_NUMBER}"
                 }
             }
         }
+    }
+
     }
 
     post {
