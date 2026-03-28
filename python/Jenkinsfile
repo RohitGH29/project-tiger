@@ -8,7 +8,6 @@ pipeline {
 
     environment {
         DOCKER_REGISTRY = "${env.DOCKER_REGISTRY ?: ''}"
-        IMAGE_TAG = "${env.BUILD_NUMBER}"
         IMAGE_NAME = 'project-python'
     }
 
@@ -34,31 +33,9 @@ pipeline {
 
         stage('Docker Image Build') {
             steps {
-                script {
-                    def tag = "${IMAGE_NAME}:${IMAGE_TAG}"
-                    def pyDir = fileExists('python/requirements.txt') ? "${env.WORKSPACE}/python" : (fileExists('requirements.txt') ? env.WORKSPACE : null)
-                    if (!pyDir) {
-                        error('No Python app found: add python/requirements.txt or requirements.txt at workspace root.')
-                    }
-                    sh """
-                        tar -cf - \\
-                          --exclude=.git \\
-                          --exclude=.venv \\
-                          --exclude=venv \\
-                          --exclude=__pycache__ \\
-                          --exclude=.ci-bin \\
-                          --exclude='*.pyc' \\
-                          -C "${pyDir}" . \\
-                          | docker build -t ${tag} -
-                        docker tag ${tag} ${IMAGE_NAME}:latest
-                    """
-                    if (env.DOCKER_REGISTRY?.trim()) {
-                        def reg = env.DOCKER_REGISTRY.trim().replaceAll('/$', '')
-                        sh """
-                            docker tag ${tag} ${reg}/${IMAGE_NAME}:${IMAGE_TAG}
-                            docker tag ${tag} ${reg}/${IMAGE_NAME}:latest
-                        """
-                    }
+                dir('python') {
+                    sh "docker build -t ${env.IMAGE_NAME}:${env.BUILD_NUMBER} ."
+                    sh "docker tag ${env.IMAGE_NAME}:${env.BUILD_NUMBER} ${env.IMAGE_NAME}:latest"
                 }
             }
         }
@@ -66,12 +43,14 @@ pipeline {
         stage('Deploy') {
             steps {
                 script {
-                    def tag = "${IMAGE_NAME}:${IMAGE_TAG}"
+                    def tag = "${env.IMAGE_NAME}:${env.BUILD_NUMBER}"
                     if (env.DOCKER_REGISTRY?.trim()) {
                         def reg = env.DOCKER_REGISTRY.trim().replaceAll('/$', '')
                         sh """
-                            docker push ${reg}/${IMAGE_NAME}:${IMAGE_TAG}
-                            docker push ${reg}/${IMAGE_NAME}:latest
+                            docker tag ${tag} ${reg}/${env.IMAGE_NAME}:${env.BUILD_NUMBER}
+                            docker tag ${tag} ${reg}/${env.IMAGE_NAME}:latest
+                            docker push ${reg}/${env.IMAGE_NAME}:${env.BUILD_NUMBER}
+                            docker push ${reg}/${env.IMAGE_NAME}:latest
                         """
                     } else {
                         sh "docker run --rm ${tag}"
