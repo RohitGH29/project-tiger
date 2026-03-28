@@ -1,7 +1,7 @@
 // agent any + docker CLI (no "Docker Pipeline" plugin required).
 // If the image has no docker binary, the pipeline downloads Docker's static client into .ci-bin (needs curl/wget + tar).
 // Prefer: jenkins/Dockerfile + compose.yaml, socket mount, and Linux group_add for docker GID.
-// If volume mounts fail, set WORKSPACE_HOST_PATH to the host path for this workspace.
+// Dependency + image build stream the app dir as tar to Docker (stdin) so Jenkins-in-Docker works without host bind mounts.
 
 pipeline {
     agent any
@@ -79,13 +79,19 @@ pipeline {
         stage('Dependency Build') {
             steps {
                 script {
-                    def wsMount = env.WORKSPACE_HOST_PATH?.trim() ? env.WORKSPACE_HOST_PATH.trim() : env.WORKSPACE
+                    def pyDir = fileExists('python/requirements.txt') ? "${env.WORKSPACE}/python" : (fileExists('requirements.txt') ? env.WORKSPACE : null)
+                    if (!pyDir) {
+                        error('No Python app found: add python/requirements.txt or requirements.txt at workspace root.')
+                    }
                     sh """
-                        docker run --rm \\
-                          -v "${wsMount}:/ws" \\
-                          -w /ws/python \\
-                          python:3.12-slim-bookworm \\
-                          sh -ce "pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r requirements.txt && python -m py_compile app.py"
+                        tar -cf - \\
+                          --exclude=.git \\
+                          --exclude=.venv \\
+                          --exclude=__pycache__ \\
+                          --exclude=.ci-bin \\
+                          --exclude='*.pyc' \\
+                          -C "${pyDir}" . \\
+                          | docker run -i --rm python:3.12-slim-bookworm sh -ce 'mkdir -p /app && tar xf - -C /app && cd /app && pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r requirements.txt && python -m py_compile app.py'
                     """
                 }
             }
@@ -95,9 +101,19 @@ pipeline {
             steps {
                 script {
                     def tag = "${IMAGE_NAME}:${IMAGE_TAG}"
-                    def wsMount = env.WORKSPACE_HOST_PATH?.trim() ? env.WORKSPACE_HOST_PATH.trim() : env.WORKSPACE
+                    def pyDir = fileExists('python/requirements.txt') ? "${env.WORKSPACE}/python" : (fileExists('requirements.txt') ? env.WORKSPACE : null)
+                    if (!pyDir) {
+                        error('No Python app found: add python/requirements.txt or requirements.txt at workspace root.')
+                    }
                     sh """
-                        docker build -t ${tag} -f "${wsMount}/python/Dockerfile" "${wsMount}/python"
+                        tar -cf - \\
+                          --exclude=.git \\
+                          --exclude=.venv \\
+                          --exclude=__pycache__ \\
+                          --exclude=.ci-bin \\
+                          --exclude='*.pyc' \\
+                          -C "${pyDir}" . \\
+                          | docker build -t ${tag} -
                         docker tag ${tag} ${IMAGE_NAME}:latest
                     """
                     if (env.DOCKER_REGISTRY?.trim()) {

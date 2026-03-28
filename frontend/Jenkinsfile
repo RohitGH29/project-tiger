@@ -1,6 +1,7 @@
 // agent any + docker CLI (no "Docker Pipeline" plugin required).
 // If the image has no docker binary, the pipeline downloads Docker's static client into .ci-bin (needs curl/wget + tar).
-// Optional: FRONTEND_LOCAL_PORT (default 9080), WORKSPACE_HOST_PATH if volume mounts fail.
+// Dependency + image build stream the app dir as tar to Docker (stdin) so Jenkins-in-Docker works without host bind mounts.
+// Optional: FRONTEND_LOCAL_PORT (default 9080).
 
 pipeline {
     agent any
@@ -79,13 +80,18 @@ pipeline {
         stage('Dependency Build') {
             steps {
                 script {
-                    def wsMount = env.WORKSPACE_HOST_PATH?.trim() ? env.WORKSPACE_HOST_PATH.trim() : env.WORKSPACE
+                    def feDir = fileExists('frontend/package.json') ? "${env.WORKSPACE}/frontend" : (fileExists('package.json') ? env.WORKSPACE : null)
+                    if (!feDir) {
+                        error('No frontend found: add frontend/package.json or package.json at workspace root.')
+                    }
                     sh """
-                        docker run --rm \\
-                          -v "${wsMount}:/ws" \\
-                          -w /ws/frontend \\
-                          node:20-alpine \\
-                          sh -ce 'if [ -f package-lock.json ]; then npm ci; else npm install --no-audit --no-fund; fi && npm run build'
+                        tar -cf - \\
+                          --exclude=node_modules \\
+                          --exclude=dist \\
+                          --exclude=.git \\
+                          --exclude=.ci-bin \\
+                          -C "${feDir}" . \\
+                          | docker run -i --rm node:20-alpine sh -ce 'mkdir -p /app && tar xf - -C /app && cd /app && if [ -f package-lock.json ]; then npm ci; else npm install --no-audit --no-fund; fi && npm run build'
                     """
                 }
             }
@@ -95,9 +101,18 @@ pipeline {
             steps {
                 script {
                     def tag = "${IMAGE_NAME}:${IMAGE_TAG}"
-                    def wsMount = env.WORKSPACE_HOST_PATH?.trim() ? env.WORKSPACE_HOST_PATH.trim() : env.WORKSPACE
+                    def feDir = fileExists('frontend/package.json') ? "${env.WORKSPACE}/frontend" : (fileExists('package.json') ? env.WORKSPACE : null)
+                    if (!feDir) {
+                        error('No frontend found: add frontend/package.json or package.json at workspace root.')
+                    }
                     sh """
-                        docker build -t ${tag} -f "${wsMount}/frontend/Dockerfile" "${wsMount}/frontend"
+                        tar -cf - \\
+                          --exclude=node_modules \\
+                          --exclude=dist \\
+                          --exclude=.git \\
+                          --exclude=.ci-bin \\
+                          -C "${feDir}" . \\
+                          | docker build -t ${tag} -
                         docker tag ${tag} ${IMAGE_NAME}:latest
                     """
                     if (env.DOCKER_REGISTRY?.trim()) {
