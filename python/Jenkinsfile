@@ -11,8 +11,7 @@
       environment {
           DOCKER_REGISTRY = "${env.DOCKER_REGISTRY ?: ''}"
           IMAGE_NAME = 'project-python'
-          PIPELINE_DETECTOR_URL = "${env.PIPELINE_DETECTOR_URL ?:
-  'http://host.docker.internal:8000'}"
+          PIPELINE_DETECTOR_URL = 'http://host.docker.internal:8000'
       }
 
       stages {
