@@ -25,74 +25,17 @@ pipeline {
             }
         }
 
-        stage('Bootstrap Docker CLI') {
+    
+
+        stage('Install Dependencies') {
             steps {
+                dir('frontend') {
                 script {
-                    if (sh(script: 'command -v docker >/dev/null 2>&1', returnStatus: true) != 0) {
-                        withEnv(["CI_WS=${env.WORKSPACE}"]) {
-                            sh '''
-                                set -e
-                                mkdir -p "$CI_WS/.ci-bin"
-                                ARCH=$(uname -m)
-                                case "$ARCH" in
-                                    x86_64) DARCH=x86_64 ;;
-                                    aarch64|arm64) DARCH=aarch64 ;;
-                                    *)
-                                        echo "No docker in PATH and unsupported arch: $ARCH (static client: x86_64, aarch64)."
-                                        exit 1
-                                        ;;
-                                esac
-                                VER=26.1.4
-                                URL="https://download.docker.com/linux/static/stable/${DARCH}/docker-${VER}.tgz"
-                                if command -v curl >/dev/null 2>&1; then
-                                    curl -fsSL "$URL" -o /tmp/docker-cli.tgz
-                                elif command -v wget >/dev/null 2>&1; then
-                                    wget -qO /tmp/docker-cli.tgz "$URL"
-                                else
-                                    echo "No docker, curl, or wget. Use jenkins/Dockerfile or install docker.io in the image."
-                                    exit 1
-                                fi
-                                tar -xzf /tmp/docker-cli.tgz -C "$CI_WS/.ci-bin" --strip-components=1 docker/docker
-                                chmod +x "$CI_WS/.ci-bin/docker"
-                            '''
-                        }
-                        env.PATH = "${env.WORKSPACE}/.ci-bin:${env.PATH}"
-                    }
+                    sh '''
+                    npm install --no-audit --no-fund
+                    npm run build
+                    '''
                 }
-            }
-        }
-
-        stage('Verify Docker') {
-            steps {
-                sh '''
-                    if ! command -v docker >/dev/null 2>&1; then
-                        echo "docker CLI still not on PATH after bootstrap."
-                        exit 1
-                    fi
-                    if ! docker info >/dev/null 2>&1; then
-                        echo "docker cannot reach the daemon. Mount /var/run/docker.sock and fix permissions (jenkins/compose.yaml group_add)."
-                        exit 1
-                    fi
-                '''
-            }
-        }
-
-        stage('Dependency Build') {
-            steps {
-                script {
-                    def feDir = fileExists('frontend/package.json') ? "${env.WORKSPACE}/frontend" : (fileExists('package.json') ? env.WORKSPACE : null)
-                    if (!feDir) {
-                        error('No frontend found: add frontend/package.json or package.json at workspace root.')
-                    }
-                    sh """
-                        tar -cf - \\
-                          --exclude=node_modules \\
-                          --exclude=dist \\
-                          --exclude=.git \\
-                          --exclude=.ci-bin \\
-                          -C "${feDir}" . \\
-                          | docker run -i --rm node:20-alpine sh -ce 'mkdir -p /app && tar xf - -C /app && cd /app && if [ -f package-lock.json ]; then npm ci; else npm install --no-audit --no-fund; fi && npm run build'
-                    """
                 }
             }
         }
