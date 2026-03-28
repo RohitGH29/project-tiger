@@ -1,6 +1,8 @@
-// Local Jenkins-in-Docker setup:
-// - Mount host Docker socket: -v /var/run/docker.sock:/var/run/docker.sock
-// - Install plugins: Docker Pipeline, Pipeline
+// agent any + docker CLI (no "Docker Pipeline" plugin required).
+// Jenkins needs: docker client on PATH + Docker socket (e.g. -v /var/run/docker.sock:/var/run/docker.sock).
+// If "docker run -v" / "docker build" fails with missing path, Jenkins is in Docker and the
+// daemon resolves volumes on the host: set job env WORKSPACE_HOST_PATH to the host path that
+// maps to this job's workspace (e.g. /Users/you/jenkins_home/workspace/Python).
 
 pipeline {
     agent any
@@ -24,55 +26,41 @@ pipeline {
         }
 
         stage('Dependency Build') {
-            agent {
-                docker {
-                    image 'python:3.12-slim-bookworm'
-                    args '-u root'
-                }
-            }
             steps {
-                dir('python') {
-                    sh '''
-                        pip install --no-cache-dir --upgrade pip
-                        pip install --no-cache-dir -r requirements.txt
-                        python -m py_compile app.py
-                    '''
+                script {
+                    def wsMount = env.WORKSPACE_HOST_PATH?.trim() ? env.WORKSPACE_HOST_PATH.trim() : env.WORKSPACE
+                    sh """
+                        docker run --rm \\
+                          -v "${wsMount}:/ws" \\
+                          -w /ws/python \\
+                          python:3.12-slim-bookworm \\
+                          sh -ce "pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r requirements.txt && python -m py_compile app.py"
+                    """
                 }
             }
         }
 
         stage('Docker Image Build') {
-            agent {
-                docker {
-                    image 'docker:24-cli'
-                    args '-v /var/run/docker.sock:/var/run/docker.sock'
-                }
-            }
             steps {
                 script {
                     def tag = "${IMAGE_NAME}:${IMAGE_TAG}"
-                    dir('python') {
-                        sh "docker build -t ${tag} ."
-                        sh "docker tag ${tag} ${IMAGE_NAME}:latest"
-                        if (env.DOCKER_REGISTRY?.trim()) {
-                            def reg = env.DOCKER_REGISTRY.trim().replaceAll('/$', '')
-                            sh """
-                                docker tag ${tag} ${reg}/${IMAGE_NAME}:${IMAGE_TAG}
-                                docker tag ${tag} ${reg}/${IMAGE_NAME}:latest
-                            """
-                        }
+                    def wsMount = env.WORKSPACE_HOST_PATH?.trim() ? env.WORKSPACE_HOST_PATH.trim() : env.WORKSPACE
+                    sh """
+                        docker build -t ${tag} -f "${wsMount}/python/Dockerfile" "${wsMount}/python"
+                        docker tag ${tag} ${IMAGE_NAME}:latest
+                    """
+                    if (env.DOCKER_REGISTRY?.trim()) {
+                        def reg = env.DOCKER_REGISTRY.trim().replaceAll('/$', '')
+                        sh """
+                            docker tag ${tag} ${reg}/${IMAGE_NAME}:${IMAGE_TAG}
+                            docker tag ${tag} ${reg}/${IMAGE_NAME}:latest
+                        """
                     }
                 }
             }
         }
 
         stage('Deploy') {
-            agent {
-                docker {
-                    image 'docker:24-cli'
-                    args '-v /var/run/docker.sock:/var/run/docker.sock'
-                }
-            }
             steps {
                 script {
                     def tag = "${IMAGE_NAME}:${IMAGE_TAG}"
@@ -83,8 +71,7 @@ pipeline {
                             docker push ${reg}/${IMAGE_NAME}:latest
                         """
                     } else {
-                        // App exits after one HTTP call; --rm cleans up. Needs outbound HTTPS to httpbin.
-                        sh "docker run --rm --name project-python-run ${tag}"
+                        sh "docker run --rm ${tag}"
                     }
                 }
             }

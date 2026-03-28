@@ -1,7 +1,6 @@
-// Local Jenkins-in-Docker setup:
-// - Mount host Docker socket: -v /var/run/docker.sock:/var/run/docker.sock
-// - Install plugins: Docker Pipeline, Pipeline
-// - Optional: map a stable port (default 9080) so the UI is reachable on your machine
+// agent any + docker CLI (no "Docker Pipeline" plugin required).
+// Jenkins needs: docker client on PATH + Docker socket (e.g. -v /var/run/docker.sock:/var/run/docker.sock).
+// Optional job env FRONTEND_LOCAL_PORT (default 9080). Optional WORKSPACE_HOST_PATH — see python/Jenkinsfile header.
 
 pipeline {
     agent any
@@ -26,51 +25,41 @@ pipeline {
         }
 
         stage('Dependency Build') {
-            agent {
-                docker {
-                    image 'node:20-alpine'
-                    args '-u root'
-                }
-            }
             steps {
-                dir('frontend') {
-                    sh 'npm ci && npm run build'
+                script {
+                    def wsMount = env.WORKSPACE_HOST_PATH?.trim() ? env.WORKSPACE_HOST_PATH.trim() : env.WORKSPACE
+                    sh """
+                        docker run --rm \\
+                          -v "${wsMount}:/ws" \\
+                          -w /ws/frontend \\
+                          node:20-alpine \\
+                          sh -ce "npm ci && npm run build"
+                    """
                 }
             }
         }
 
         stage('Docker Image Build') {
-            agent {
-                docker {
-                    image 'docker:24-cli'
-                    args '-v /var/run/docker.sock:/var/run/docker.sock'
-                }
-            }
             steps {
                 script {
                     def tag = "${IMAGE_NAME}:${IMAGE_TAG}"
-                    dir('frontend') {
-                        sh "docker build -t ${tag} ."
-                        sh "docker tag ${tag} ${IMAGE_NAME}:latest"
-                        if (env.DOCKER_REGISTRY?.trim()) {
-                            def reg = env.DOCKER_REGISTRY.trim().replaceAll('/$', '')
-                            sh """
-                                docker tag ${tag} ${reg}/${IMAGE_NAME}:${IMAGE_TAG}
-                                docker tag ${tag} ${reg}/${IMAGE_NAME}:latest
-                            """
-                        }
+                    def wsMount = env.WORKSPACE_HOST_PATH?.trim() ? env.WORKSPACE_HOST_PATH.trim() : env.WORKSPACE
+                    sh """
+                        docker build -t ${tag} -f "${wsMount}/frontend/Dockerfile" "${wsMount}/frontend"
+                        docker tag ${tag} ${IMAGE_NAME}:latest
+                    """
+                    if (env.DOCKER_REGISTRY?.trim()) {
+                        def reg = env.DOCKER_REGISTRY.trim().replaceAll('/$', '')
+                        sh """
+                            docker tag ${tag} ${reg}/${IMAGE_NAME}:${IMAGE_TAG}
+                            docker tag ${tag} ${reg}/${IMAGE_NAME}:latest
+                        """
                     }
                 }
             }
         }
 
         stage('Deploy') {
-            agent {
-                docker {
-                    image 'docker:24-cli'
-                    args '-v /var/run/docker.sock:/var/run/docker.sock'
-                }
-            }
             steps {
                 script {
                     def tag = "${IMAGE_NAME}:${IMAGE_TAG}"
@@ -86,7 +75,7 @@ pipeline {
                             docker rm project-frontend-local 2>/dev/null || true
                             docker run -d --name project-frontend-local -p ${LOCAL_PORT}:80 ${tag}
                         """
-                        echo "Frontend (nginx) published on host port ${LOCAL_PORT} (http://localhost:${LOCAL_PORT})"
+                        echo "Frontend (nginx) on http://localhost:${LOCAL_PORT}"
                     }
                 }
             }
