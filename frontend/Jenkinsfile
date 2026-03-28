@@ -85,7 +85,7 @@ pipeline {
                           -v "${wsMount}:/ws" \\
                           -w /ws/frontend \\
                           node:20-alpine \\
-                          sh -ce "npm ci && npm run build"
+                          sh -ce 'if [ -f package-lock.json ]; then npm ci; else npm install --no-audit --no-fund; fi && npm run build'
                     """
                 }
             }
