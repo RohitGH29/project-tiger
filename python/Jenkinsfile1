@@ -1,0 +1,153 @@
+// agent any + docker CLI (no "Docker Pipeline" plugin required).
+// If the image has no docker binary, the pipeline downloads Docker's static client into .ci-bin (needs curl/wget + tar).
+// Prefer: jenkins/Dockerfile + compose.yaml, socket mount, and Linux group_add for docker GID.
+// Dependency + image build stream the app dir as tar to Docker (stdin) so Jenkins-in-Docker works without host bind mounts.
+
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds(abortPrevious: true)
+    }
+
+    environment {
+        DOCKER_REGISTRY = "${env.DOCKER_REGISTRY ?: ''}"
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
+        IMAGE_NAME = 'project-python'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Bootstrap Docker CLI') {
+            steps {
+                script {
+                    if (sh(script: 'command -v docker >/dev/null 2>&1', returnStatus: true) != 0) {
+                        withEnv(["CI_WS=${env.WORKSPACE}"]) {
+                            sh '''
+                                set -e
+                                mkdir -p "$CI_WS/.ci-bin"
+                                ARCH=$(uname -m)
+                                case "$ARCH" in
+                                    x86_64) DARCH=x86_64 ;;
+                                    aarch64|arm64) DARCH=aarch64 ;;
+                                    *)
+                                        echo "No docker in PATH and unsupported arch: $ARCH (static client: x86_64, aarch64)."
+                                        exit 1
+                                        ;;
+                                esac
+                                VER=26.1.4
+                                URL="https://download.docker.com/linux/static/stable/${DARCH}/docker-${VER}.tgz"
+                                if command -v curl >/dev/null 2>&1; then
+                                    curl -fsSL "$URL" -o /tmp/docker-cli.tgz
+                                elif command -v wget >/dev/null 2>&1; then
+                                    wget -qO /tmp/docker-cli.tgz "$URL"
+                                else
+                                    echo "No docker, curl, or wget. Use jenkins/Dockerfile or install docker.io in the image."
+                                    exit 1
+                                fi
+                                tar -xzf /tmp/docker-cli.tgz -C "$CI_WS/.ci-bin" --strip-components=1 docker/docker
+                                chmod +x "$CI_WS/.ci-bin/docker"
+                            '''
+                        }
+                        env.PATH = "${env.WORKSPACE}/.ci-bin:${env.PATH}"
+                    }
+                }
+            }
+        }
+
+        stage('Verify Docker') {
+            steps {
+                sh '''
+                    if ! command -v docker >/dev/null 2>&1; then
+                        echo "docker CLI still not on PATH after bootstrap."
+                        exit 1
+                    fi
+                    if ! docker info >/dev/null 2>&1; then
+                        echo "docker cannot reach the daemon. Mount /var/run/docker.sock and fix permissions (jenkins/compose.yaml group_add)."
+                        exit 1
+                    fi
+                '''
+            }
+        }
+
+        stage('Dependency Build') {
+            steps {
+                script {
+                    def pyDir = fileExists('python/requirements.txt') ? "${env.WORKSPACE}/python" : (fileExists('requirements.txt') ? env.WORKSPACE : null)
+                    if (!pyDir) {
+                        error('No Python app found: add python/requirements.txt or requirements.txt at workspace root.')
+                    }
+                    sh """
+                        tar -cf - \\
+                          --exclude=.git \\
+                          --exclude=.venv \\
+                          --exclude=__pycache__ \\
+                          --exclude=.ci-bin \\
+                          --exclude='*.pyc' \\
+                          -C "${pyDir}" . \\
+                          | docker run -i --rm python:3.12-slim-bookworm sh -ce 'mkdir -p /app && tar xf - -C /app && cd /app && pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r requirements.txt && python -m py_compile app.py'
+                    """
+                }
+            }
+        }
+
+        stage('Docker Image Build') {
+            steps {
+                script {
+                    def tag = "${IMAGE_NAME}:${IMAGE_TAG}"
+                    def pyDir = fileExists('python/requirements.txt') ? "${env.WORKSPACE}/python" : (fileExists('requirements.txt') ? env.WORKSPACE : null)
+                    if (!pyDir) {
+                        error('No Python app found: add python/requirements.txt or requirements.txt at workspace root.')
+                    }
+                    sh """
+                        tar -cf - \\
+                          --exclude=.git \\
+                          --exclude=.venv \\
+                          --exclude=__pycache__ \\
+                          --exclude=.ci-bin \\
+                          --exclude='*.pyc' \\
+                          -C "${pyDir}" . \\
+                          | docker build -t ${tag} -
+                        docker tag ${tag} ${IMAGE_NAME}:latest
+                    """
+                    if (env.DOCKER_REGISTRY?.trim()) {
+                        def reg = env.DOCKER_REGISTRY.trim().replaceAll('/$', '')
+                        sh """
+                            docker tag ${tag} ${reg}/${IMAGE_NAME}:${IMAGE_TAG}
+                            docker tag ${tag} ${reg}/${IMAGE_NAME}:latest
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                script {
+                    def tag = "${IMAGE_NAME}:${IMAGE_TAG}"
+                    if (env.DOCKER_REGISTRY?.trim()) {
+                        def reg = env.DOCKER_REGISTRY.trim().replaceAll('/$', '')
+                        sh """
+                            docker push ${reg}/${IMAGE_NAME}:${IMAGE_TAG}
+                            docker push ${reg}/${IMAGE_NAME}:latest
+                        """
+                    } else {
+                        sh "docker run --rm ${tag}"
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+            echo 'Python pipeline failed — check stages above.'
+        }
+    }
+}
