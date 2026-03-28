@@ -1,7 +1,7 @@
 // agent any + docker CLI (no "Docker Pipeline" plugin required).
-// Official jenkins/jenkins has NO docker binary — use repo jenkins/Dockerfile + jenkins/compose.yaml.
-// Mount socket: -v /var/run/docker.sock:/var/run/docker.sock (see compose.yaml group_add on Linux).
-// If volume mounts fail, set job env WORKSPACE_HOST_PATH to the host path for this workspace.
+// If the image has no docker binary, the pipeline downloads Docker's static client into .ci-bin (needs curl/wget + tar).
+// Prefer: jenkins/Dockerfile + compose.yaml, socket mount, and Linux group_add for docker GID.
+// If volume mounts fail, set WORKSPACE_HOST_PATH to the host path for this workspace.
 
 pipeline {
     agent any
@@ -24,12 +24,48 @@ pipeline {
             }
         }
 
+        stage('Bootstrap Docker CLI') {
+            steps {
+                script {
+                    if (sh(script: 'command -v docker >/dev/null 2>&1', returnStatus: true) != 0) {
+                        withEnv(["CI_WS=${env.WORKSPACE}"]) {
+                            sh '''
+                                set -e
+                                mkdir -p "$CI_WS/.ci-bin"
+                                ARCH=$(uname -m)
+                                case "$ARCH" in
+                                    x86_64) DARCH=x86_64 ;;
+                                    aarch64|arm64) DARCH=aarch64 ;;
+                                    *)
+                                        echo "No docker in PATH and unsupported arch: $ARCH (static client: x86_64, aarch64)."
+                                        exit 1
+                                        ;;
+                                esac
+                                VER=26.1.4
+                                URL="https://download.docker.com/linux/static/stable/${DARCH}/docker-${VER}.tgz"
+                                if command -v curl >/dev/null 2>&1; then
+                                    curl -fsSL "$URL" -o /tmp/docker-cli.tgz
+                                elif command -v wget >/dev/null 2>&1; then
+                                    wget -qO /tmp/docker-cli.tgz "$URL"
+                                else
+                                    echo "No docker, curl, or wget. Use jenkins/Dockerfile or install docker.io in the image."
+                                    exit 1
+                                fi
+                                tar -xzf /tmp/docker-cli.tgz -C "$CI_WS/.ci-bin" --strip-components=1 docker/docker
+                                chmod +x "$CI_WS/.ci-bin/docker"
+                            '''
+                        }
+                        env.PATH = "${env.WORKSPACE}/.ci-bin:${env.PATH}"
+                    }
+                }
+            }
+        }
+
         stage('Verify Docker') {
             steps {
                 sh '''
                     if ! command -v docker >/dev/null 2>&1; then
-                        echo "docker CLI not found inside Jenkins."
-                        echo "Fix: build and run from repo jenkins/ (Dockerfile + compose.yaml), or apt-get install docker.io in your image."
+                        echo "docker CLI still not on PATH after bootstrap."
                         exit 1
                     fi
                     if ! docker info >/dev/null 2>&1; then
