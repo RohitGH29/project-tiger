@@ -1,157 +1,66 @@
-// agent any + docker CLI (no "Docker Pipeline" plugin required).
-// If the image has no docker binary, the pipeline downloads Docker's static client into .ci-bin (needs curl/wget + tar).
-// Dependency + image build stream the app dir as tar to Docker (stdin) so Jenkins-in-Docker works without host bind mounts.
-// Optional: FRONTEND_LOCAL_PORT (default 9080).
+@Library('team-tiger-techies-shared') _
 
-pipeline {
-    agent any
+  pipeline {
+      agent any
 
-    options {
-        timestamps()
-        disableConcurrentBuilds(abortPrevious: true)
-    }
+      options {
+          timestamps()
+          disableConcurrentBuilds(abortPrevious: true)
+      }
 
-    environment {
-        DOCKER_REGISTRY = "${env.DOCKER_REGISTRY ?: ''}"
-        IMAGE_TAG = "${env.BUILD_NUMBER}"
-        IMAGE_NAME = 'project-frontend'
-        LOCAL_PORT = "${env.FRONTEND_LOCAL_PORT ?: '9080'}"
-    }
+      environment {
+          DOCKER_REGISTRY = "${env.DOCKER_REGISTRY ?: ''}"
+          IMAGE_TAG = "${env.BUILD_NUMBER}"
+          IMAGE_NAME = 'project-frontend'
+          LOCAL_PORT = "${env.FRONTEND_LOCAL_PORT ?: '9080'}"
+          PIPELINE_DETECTOR_URL = 'http://host.docker.internal:8000'
+      }
 
-    stages {
-        stage('Checkout') {
-            steps {
-                checkout scm
-            }
-        }
+      stages {
+          stage('Checkout') {
+              steps {
+                  checkout scm
+              }
+          }
 
-        stage('Bootstrap Docker CLI') {
-            steps {
-                script {
-                    if (sh(script: 'command -v docker >/dev/null 2>&1', returnStatus: true) != 0) {
-                        withEnv(["CI_WS=${env.WORKSPACE}"]) {
-                            sh '''
-                                set -e
-                                mkdir -p "$CI_WS/.ci-bin"
-                                ARCH=$(uname -m)
-                                case "$ARCH" in
-                                    x86_64) DARCH=x86_64 ;;
-                                    aarch64|arm64) DARCH=aarch64 ;;
-                                    *)
-                                        echo "No docker in PATH and unsupported arch: $ARCH (static client: x86_64, aarch64)."
-                                        exit 1
-                                        ;;
-                                esac
-                                VER=26.1.4
-                                URL="https://download.docker.com/linux/static/stable/${DARCH}/docker-${VER}.tgz"
-                                if command -v curl >/dev/null 2>&1; then
-                                    curl -fsSL "$URL" -o /tmp/docker-cli.tgz
-                                elif command -v wget >/dev/null 2>&1; then
-                                    wget -qO /tmp/docker-cli.tgz "$URL"
-                                else
-                                    echo "No docker, curl, or wget. Use jenkins/Dockerfile or install docker.io in the image."
-                                    exit 1
-                                fi
-                                tar -xzf /tmp/docker-cli.tgz -C "$CI_WS/.ci-bin" --strip-components=1 docker/docker
-                                chmod +x "$CI_WS/.ci-bin/docker"
-                            '''
-                        }
-                        env.PATH = "${env.WORKSPACE}/.ci-bin:${env.PATH}"
-                    }
-                }
-            }
-        }
+          stage('Install Dependencies') {
+              steps {
+                  dir('frontend') {
+                      sh '''
+                          npm install --no-audit --no-fund
+                          npm run build
+                      '''
+                  }
+              }
+          }
 
-        stage('Verify Docker') {
-            steps {
-                sh '''
-                    if ! command -v docker >/dev/null 2>&1; then
-                        echo "docker CLI still not on PATH after bootstrap."
-                        exit 1
-                    fi
-                    if ! docker info >/dev/null 2>&1; then
-                        echo "docker cannot reach the daemon. Mount /var/run/docker.sock and fix permissions (jenkins/compose.yaml group_add)."
-                        exit 1
-                    fi
-                '''
-            }
-        }
+          stage('Docker Image Build') {
+              steps {
+                  dir('frontend') {
+                      sh "docker build -t ${env.IMAGE_NAME}:${env.BUILD_NUMBER} ."
+                  }
+              }
+          }
 
-        stage('Dependency Build') {
-            steps {
-                script {
-                    def feDir = fileExists('frontend/package.json') ? "${env.WORKSPACE}/frontend" : (fileExists('package.json') ? env.WORKSPACE : null)
-                    if (!feDir) {
-                        error('No frontend found: add frontend/package.json or package.json at workspace root.')
-                    }
-                    sh """
-                        tar -cf - \\
-                          --exclude=node_modules \\
-                          --exclude=dist \\
-                          --exclude=.git \\
-                          --exclude=.ci-bin \\
-                          -C "${feDir}" . \\
-                          | docker run -i --rm node:20-alpine sh -ce 'mkdir -p /app && tar xf - -C /app && cd /app && if [ -f package-lock.json ]; then npm ci; else npm install --no-audit --no-fund; fi && npm run build'
-                    """
-                }
-            }
-        }
+          stage('Deploy') {
+              steps {
+                  script {
+                      sh "docker stop project-frontend-local 2>/dev/null || true"
+                      sh "docker rm project-frontend-local 2>/dev/null || true"
+                      sh "docker run -d --name project-frontend-local -p ${env.LOCAL_PORT}:80 ${env.IMAGE_NAME}:${env.BUILD_NUMBER}"
+                  }
+              }
+          }
+      }
 
-        stage('Docker Image Build') {
-            steps {
-                script {
-                    def tag = "${IMAGE_NAME}:${IMAGE_TAG}"
-                    def feDir = fileExists('frontend/package.json') ? "${env.WORKSPACE}/frontend" : (fileExists('package.json') ? env.WORKSPACE : null)
-                    if (!feDir) {
-                        error('No frontend found: add frontend/package.json or package.json at workspace root.')
-                    }
-                    sh """
-                        tar -cf - \\
-                          --exclude=node_modules \\
-                          --exclude=dist \\
-                          --exclude=.git \\
-                          --exclude=.ci-bin \\
-                          -C "${feDir}" . \\
-                          | docker build -t ${tag} -
-                        docker tag ${tag} ${IMAGE_NAME}:latest
-                    """
-                    if (env.DOCKER_REGISTRY?.trim()) {
-                        def reg = env.DOCKER_REGISTRY.trim().replaceAll('/$', '')
-                        sh """
-                            docker tag ${tag} ${reg}/${IMAGE_NAME}:${IMAGE_TAG}
-                            docker tag ${tag} ${reg}/${IMAGE_NAME}:latest
-                        """
-                    }
-                }
-            }
-        }
-
-        stage('Deploy') {
-            steps {
-                script {
-                    def tag = "${IMAGE_NAME}:${IMAGE_TAG}"
-                    if (env.DOCKER_REGISTRY?.trim()) {
-                        def reg = env.DOCKER_REGISTRY.trim().replaceAll('/$', '')
-                        sh """
-                            docker push ${reg}/${IMAGE_NAME}:${IMAGE_TAG}
-                            docker push ${reg}/${IMAGE_NAME}:latest
-                        """
-                    } else {
-                        sh """
-                            docker stop project-frontend-local 2>/dev/null || true
-                            docker rm project-frontend-local 2>/dev/null || true
-                            docker run -d --name project-frontend-local -p ${LOCAL_PORT}:80 ${tag}
-                        """
-                        echo "Frontend (nginx) on http://localhost:${LOCAL_PORT}"
-                    }
-                }
-            }
-        }
-    }
-
-    post {
-        failure {
-            echo 'Frontend pipeline failed — check stages above.'
-        }
-    }
-}
+      post {
+          always {
+              script {
+                  pipelineReporter()
+              }
+          }
+          failure {
+              echo 'Frontend pipeline failed — check stages above.'
+          }
+      }
+  }
