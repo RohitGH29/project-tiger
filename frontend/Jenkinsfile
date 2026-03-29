@@ -13,7 +13,7 @@
           IMAGE_TAG = "${env.BUILD_NUMBER}"
           IMAGE_NAME = 'project-frontend'
           LOCAL_PORT = "${env.FRONTEND_LOCAL_PORT ?: '9080'}"
-          PIPELINE_DETECTOR_URL = 'http://host.docker.internal:8000'
+          PIPELINE_DETECTOR_URL = 'http://project-alb-986991570.ap-south-1.elb.amazonaws.com:8000'
       }
 
       stages {

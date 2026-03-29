@@ -11,13 +11,14 @@
       environment {
           DOCKER_REGISTRY = "${env.DOCKER_REGISTRY ?: ''}"
           IMAGE_NAME = 'project-python'
-          PIPELINE_DETECTOR_URL = 'http://host.docker.internal:8000'
+          PIPELINE_DETECTOR_URL = 'http://project-alb-986991570.ap-south-1.elb.amazonaws.com:8000'
       }
 
       stages {
           stage('Checkout') {
               steps {
                   checkout scm
+                  sh 'whoami'
               }
           }
 
